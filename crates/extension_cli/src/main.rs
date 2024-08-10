@@ -13,7 +13,7 @@ use extension::{
     extension_builder::{CompileExtensionOptions, ExtensionBuilder},
     ExtensionManifest,
 };
-use http_client::proxy::Proxy;
+use http_client::{client, proxy::Proxy};
 use language::LanguageConfig;
 use theme::ThemeRegistry;
 use tree_sitter::{Language, Query, WasmStore};
@@ -59,7 +59,15 @@ async fn main() -> Result<()> {
     let mut manifest = ExtensionManifest::load(fs.clone(), &extension_path).await?;
 
     log::info!("compiling extension");
-    let builder = ExtensionBuilder::new(http_client::client(Proxy::env_proxy()), scratch_dir);
+
+    let user_agent = format!(
+        "Zed Extension CLI/{} ({}; {})",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
+    let http_client = client(Proxy::env_proxy(), Some(user_agent));
+    let builder = ExtensionBuilder::new(http_client, scratch_dir);
     builder
         .compile_extension(
             &extension_path,

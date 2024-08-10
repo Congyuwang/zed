@@ -56,6 +56,7 @@ x11rb::atom_manager! {
         _GTK_SHOW_WINDOW_MENU,
         _GTK_FRAME_EXTENTS,
         _GTK_EDGE_CONSTRAINTS,
+        _NET_CLIENT_LIST_STACKING,
     }
 }
 
@@ -790,15 +791,6 @@ impl X11WindowStatePtr {
                 state.hidden = true;
             }
         }
-
-        let hovered_window = self
-            .xcb_connection
-            .query_pointer(state.x_root_window)
-            .unwrap()
-            .reply()
-            .unwrap()
-            .child;
-        self.set_hovered(hovered_window == self.x_window);
     }
 
     pub fn close(&self) {
@@ -1230,6 +1222,14 @@ impl PlatformWindow for X11Window {
 
     fn show_window_menu(&self, position: Point<Pixels>) {
         let state = self.0.state.borrow();
+
+        self.0
+            .xcb_connection
+            .ungrab_pointer(x11rb::CURRENT_TIME)
+            .unwrap()
+            .check()
+            .unwrap();
+
         let coords = self.get_root_position(position);
         let message = ClientMessageEvent::new(
             32,

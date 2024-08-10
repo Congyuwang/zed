@@ -73,15 +73,18 @@ pub struct HttpClientWithProxy {
 
 impl HttpClientWithProxy {
     /// Returns a new [`HttpClientWithProxy`] with the given proxy URL.
-    pub fn new(proxy: Proxy) -> Self {
-        let client = Arc::new(
-            isahc::HttpClient::builder()
-                .connect_timeout(Duration::from_secs(5))
-                .low_speed_timeout(100, Duration::from_secs(5))
-                .build()
-                .unwrap(),
-        );
-        Self { client, proxy }
+    pub fn new(proxy: Proxy, user_agent: Option<String>) -> Self {
+        let mut builder = isahc::HttpClient::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .low_speed_timeout(100, Duration::from_secs(5));
+        if let Some(user_agent) = user_agent {
+            builder = builder.default_header("User-Agent", user_agent);
+        }
+
+        Self {
+            client: Arc::new(builder.build().unwrap()),
+            proxy,
+        }
     }
 }
 
@@ -127,8 +130,8 @@ pub struct HttpClientWithUrl {
 
 impl HttpClientWithUrl {
     /// Returns a new [`HttpClientWithUrl`] with the given base URL.
-    pub fn new(base_url: impl Into<String>, proxy: Proxy) -> Self {
-        let client = HttpClientWithProxy::new(proxy);
+    pub fn new(base_url: impl Into<String>, proxy: Proxy, user_agent: Option<String>,) -> Self {
+        let client = HttpClientWithProxy::new(proxy, user_agent);
         Self {
             base_url: Mutex::new(base_url.into()),
             client,
@@ -166,6 +169,22 @@ impl HttpClientWithUrl {
             query,
         )?)
     }
+
+    /// Builds a Zed LLM URL using the given path.
+    pub fn build_zed_llm_url(&self, path: &str, query: &[(&str, &str)]) -> Result<Url> {
+        let base_url = self.base_url();
+        let base_api_url = match base_url.as_ref() {
+            "https://zed.dev" => "https://llm.zed.dev",
+            "https://staging.zed.dev" => "https://llm-staging.zed.dev",
+            "http://localhost:3000" => "http://localhost:8080",
+            other => other,
+        };
+
+        Ok(Url::parse_with_params(
+            &format!("{}{}", base_api_url, path),
+            query,
+        )?)
+    }
 }
 
 impl HttpClient for Arc<HttpClientWithUrl> {
@@ -194,8 +213,8 @@ impl HttpClient for HttpClientWithUrl {
     }
 }
 
-pub fn client(proxy: Proxy) -> Arc<dyn HttpClient> {
-    Arc::new(HttpClientWithProxy::new(proxy))
+pub fn client(proxy: Proxy, user_agent: Option<String>) -> Arc<dyn HttpClient> {
+    Arc::new(HttpClientWithProxy::new(proxy, user_agent))
 }
 
 impl HttpClient for isahc::HttpClient {

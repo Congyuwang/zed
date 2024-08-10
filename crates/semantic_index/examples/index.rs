@@ -29,6 +29,7 @@ fn main() {
         let http = Arc::new(HttpClientWithUrl::new(
             "http://localhost:11434",
             Proxy::no_proxy(),
+            None,
         ));
 
         let client = client::Client::new(clock, http.clone(), cx);

@@ -544,6 +544,12 @@ impl Client {
     }
 
     pub fn production(cx: &mut AppContext) -> Arc<Self> {
+        let user_agent = format!(
+            "Zed/{} ({}; {})",
+            AppVersion::global(cx),
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        );
         let clock = Arc::new(clock::RealSystemClock);
         let proxy = Proxy::init(&ProxySettings::get_global(cx).proxy);
         let proxy_clone = proxy.clone();
@@ -554,6 +560,7 @@ impl Client {
         let http = Arc::new(HttpClientWithUrl::new(
             &ClientSettings::get_global(cx).server_url,
             proxy,
+            Some(user_agent),
         ));
         Self::new(clock, http.clone(), cx)
     }
