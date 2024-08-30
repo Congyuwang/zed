@@ -20,7 +20,7 @@ pub use registry::*;
 pub use request::*;
 pub use role::*;
 use schemars::JsonSchema;
-use serde::de::DeserializeOwned;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{future::Future, sync::Arc};
 use ui::IconName;
 
@@ -43,9 +43,21 @@ pub enum LanguageModelAvailability {
     RequiresPlan(Plan),
 }
 
+/// Configuration for caching language model messages.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct LanguageModelCacheConfiguration {
+    pub max_cache_anchors: usize,
+    pub should_speculate: bool,
+    pub min_total_token: usize,
+}
+
 pub trait LanguageModel: Send + Sync {
     fn id(&self) -> LanguageModelId;
     fn name(&self) -> LanguageModelName;
+    /// If None, falls back to [LanguageModelProvider::icon]
+    fn icon(&self) -> Option<IconName> {
+        None
+    }
     fn provider_id(&self) -> LanguageModelProviderId;
     fn provider_name(&self) -> LanguageModelProviderName;
     fn telemetry_id(&self) -> String;
@@ -56,6 +68,9 @@ pub trait LanguageModel: Send + Sync {
     }
 
     fn max_token_count(&self) -> usize;
+    fn max_output_tokens(&self) -> Option<u32> {
+        None
+    }
 
     fn count_tokens(
         &self,
@@ -77,6 +92,10 @@ pub trait LanguageModel: Send + Sync {
         schema: serde_json::Value,
         cx: &AsyncAppContext,
     ) -> BoxFuture<'static, Result<BoxStream<'static, Result<String>>>>;
+
+    fn cache_configuration(&self) -> Option<LanguageModelCacheConfiguration> {
+        None
+    }
 
     #[cfg(any(test, feature = "test-support"))]
     fn as_fake(&self) -> &provider::fake::FakeLanguageModel {

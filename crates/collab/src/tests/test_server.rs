@@ -667,6 +667,7 @@ impl TestServer {
                 google_ai_api_key: None,
                 anthropic_api_key: None,
                 anthropic_staff_api_key: None,
+                llm_closed_beta_model_name: None,
                 clickhouse_url: None,
                 clickhouse_user: None,
                 clickhouse_password: None,
@@ -681,6 +682,7 @@ impl TestServer {
                 supermaven_admin_api_key: None,
                 qwen2_7b_api_key: None,
                 qwen2_7b_api_url: None,
+                user_backfiller_github_access_token: None,
             },
         })
     }
@@ -914,6 +916,7 @@ impl TestClient {
                 self.app_state.user_store.clone(),
                 self.app_state.languages.clone(),
                 self.app_state.fs.clone(),
+                None,
                 cx,
             )
         })

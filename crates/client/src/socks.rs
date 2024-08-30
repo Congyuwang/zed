@@ -1,30 +1,51 @@
-use std::pin::Pin;
-
+//! socks proxy
+use anyhow::{anyhow, Result};
 use futures::io::{AsyncRead, AsyncWrite};
 use http_client::proxy::Proxy;
-use tokio_socks::io::Compat;
+use tokio_socks::{
+    io::Compat,
+    tcp::{Socks4Stream, Socks5Stream},
+};
 
-pub enum SocksVersion {
-    V4,
-    V5,
+pub(crate) async fn connect_socks_proxy_stream(
+    proxy: Proxy,
+    rpc_host: (&str, u16),
+) -> Result<Box<dyn AsyncReadWrite>> {
+    let stream = match parse_socks_proxy(proxy) {
+        Some((socks_proxy, SocksVersion::V4)) => {
+            let stream = Socks4Stream::connect_with_socket(
+                Compat::new(smol::net::TcpStream::connect(socks_proxy).await?),
+                rpc_host,
+            )
+            .await
+            .map_err(|err| anyhow!("error connecting to socks {}", err))?;
+            Box::new(stream) as Box<dyn AsyncReadWrite>
+        }
+        Some((socks_proxy, SocksVersion::V5)) => Box::new(
+            Socks5Stream::connect_with_socket(
+                Compat::new(smol::net::TcpStream::connect(socks_proxy).await?),
+                rpc_host,
+            )
+            .await
+            .map_err(|err| anyhow!("error connecting to socks {}", err))?,
+        ) as Box<dyn AsyncReadWrite>,
+        None => Box::new(smol::net::TcpStream::connect(rpc_host).await?) as Box<dyn AsyncReadWrite>,
+    };
+    Ok(stream)
 }
 
-pub enum SocksStream<S> {
-    NoProxy(S),
-    Socks4(tokio_socks::tcp::Socks4Stream<Compat<S>>),
-    Socks5(tokio_socks::tcp::Socks5Stream<Compat<S>>),
-}
-
-pub fn get_socks_proxy(proxy: &Proxy) -> Option<((String, u16), SocksVersion)> {
+fn parse_socks_proxy(proxy: Proxy) -> Option<((String, u16), SocksVersion)> {
     let Some(proxy_uri) = proxy.to_uri() else {
         return None;
     };
-    let Some(schema) = proxy_uri.scheme_str() else {
+    let Some(scheme) = proxy_uri.scheme_str() else {
         return None;
     };
-    let socks_version = if schema.starts_with("socks4") {
+    let socks_version = if scheme.starts_with("socks4") {
+        // socks4
         SocksVersion::V4
-    } else if schema.starts_with("socks") {
+    } else if scheme.starts_with("socks") {
+        // socks, socks5
         SocksVersion::V5
     } else {
         return None;
@@ -36,52 +57,10 @@ pub fn get_socks_proxy(proxy: &Proxy) -> Option<((String, u16), SocksVersion)> {
     }
 }
 
-impl<S: AsyncRead + Unpin> AsyncRead for SocksStream<S> {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut [u8],
-    ) -> std::task::Poll<std::io::Result<usize>> {
-        match self.get_mut() {
-            SocksStream::NoProxy(s) => AsyncRead::poll_read(Pin::new(s), cx, buf),
-            SocksStream::Socks4(s4) => AsyncRead::poll_read(Pin::new(s4), cx, buf),
-            SocksStream::Socks5(s5) => AsyncRead::poll_read(Pin::new(s5), cx, buf),
-        }
-    }
+enum SocksVersion {
+    V4,
+    V5,
 }
 
-impl<S: AsyncWrite + Unpin> AsyncWrite for SocksStream<S> {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> std::task::Poll<Result<usize, std::io::Error>> {
-        match self.get_mut() {
-            SocksStream::NoProxy(s) => AsyncWrite::poll_write(Pin::new(s), cx, buf),
-            SocksStream::Socks4(s4) => AsyncWrite::poll_write(Pin::new(s4), cx, buf),
-            SocksStream::Socks5(s5) => AsyncWrite::poll_write(Pin::new(s5), cx, buf),
-        }
-    }
-
-    fn poll_flush(
-        self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), std::io::Error>> {
-        match self.get_mut() {
-            SocksStream::NoProxy(s) => AsyncWrite::poll_flush(Pin::new(s), cx),
-            SocksStream::Socks4(s4) => AsyncWrite::poll_flush(Pin::new(s4), cx),
-            SocksStream::Socks5(s5) => AsyncWrite::poll_flush(Pin::new(s5), cx),
-        }
-    }
-
-    fn poll_close(
-        self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), std::io::Error>> {
-        match self.get_mut() {
-            SocksStream::NoProxy(s) => AsyncWrite::poll_close(Pin::new(s), cx),
-            SocksStream::Socks4(s4) => AsyncWrite::poll_close(Pin::new(s4), cx),
-            SocksStream::Socks5(s5) => AsyncWrite::poll_close(Pin::new(s5), cx),
-        }
-    }
-}
+pub(crate) trait AsyncReadWrite: AsyncRead + AsyncWrite + Unpin + Send + 'static {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> AsyncReadWrite for T {}
