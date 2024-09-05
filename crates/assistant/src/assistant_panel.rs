@@ -14,12 +14,13 @@ use crate::{
     Assist, CacheStatus, ConfirmCommand, Context, ContextEvent, ContextId, ContextStore,
     ContextStoreEvent, CycleMessageRole, DeployHistory, DeployPromptLibrary, InlineAssistId,
     InlineAssistant, InsertIntoEditor, Message, MessageId, MessageMetadata, MessageStatus,
-    ModelPickerDelegate, ModelSelector, PendingSlashCommand, PendingSlashCommandStatus,
+    ModelPickerDelegate, ModelSelector, NewContext, PendingSlashCommand, PendingSlashCommandStatus,
     QuoteSelection, RemoteContextMetadata, SavedContextMetadata, Split, ToggleFocus,
     ToggleModelSelector, WorkflowStepResolution,
 };
 use anyhow::{anyhow, Result};
 use assistant_slash_command::{SlashCommand, SlashCommandOutputSection};
+use assistant_tool::ToolRegistry;
 use client::{proto, Client, Status};
 use collections::{BTreeSet, HashMap, HashSet};
 use editor::{
@@ -68,6 +69,7 @@ use ui::{
     ListItemSpacing, PopoverMenu, PopoverMenuHandle, Tooltip,
 };
 use util::ResultExt;
+use workspace::searchable::SearchableItemHandle;
 use workspace::{
     dock::{DockPosition, Panel, PanelEvent},
     item::{self, FollowableItem, Item, ItemHandle},
@@ -76,7 +78,6 @@ use workspace::{
     Pane, Save, ShowConfiguration, ToggleZoom, ToolbarItemEvent, ToolbarItemLocation,
     ToolbarItemView, Workspace,
 };
-use workspace::{searchable::SearchableItemHandle, NewFile};
 use zed_actions::InlineAssist;
 
 pub fn init(cx: &mut AppContext) {
@@ -95,7 +96,8 @@ pub fn init(cx: &mut AppContext) {
                 .register_action(AssistantPanel::inline_assist)
                 .register_action(ContextEditor::quote_selection)
                 .register_action(ContextEditor::insert_selection)
-                .register_action(AssistantPanel::show_configuration);
+                .register_action(AssistantPanel::show_configuration)
+                .register_action(AssistantPanel::create_new_context);
         },
     )
     .detach();
@@ -335,7 +337,7 @@ impl AssistantPanel {
                 workspace.project().clone(),
                 Default::default(),
                 None,
-                NewFile.boxed_clone(),
+                NewContext.boxed_clone(),
                 cx,
             );
             pane.set_can_split(false, cx);
@@ -366,9 +368,11 @@ impl AssistantPanel {
                     .child(
                         IconButton::new("new-context", IconName::Plus)
                             .on_click(
-                                cx.listener(|_, _, cx| cx.dispatch_action(NewFile.boxed_clone())),
+                                cx.listener(|_, _, cx| {
+                                    cx.dispatch_action(NewContext.boxed_clone())
+                                }),
                             )
-                            .tooltip(|cx| Tooltip::for_action("New Context", &NewFile, cx)),
+                            .tooltip(|cx| Tooltip::for_action("New Context", &NewContext, cx)),
                     )
                     .child(
                         PopoverMenu::new("assistant-panel-popover-menu")
@@ -384,7 +388,7 @@ impl AssistantPanel {
                                 let focus_handle = _pane.focus_handle(cx);
                                 Some(ContextMenu::build(cx, move |menu, _| {
                                     menu.context(focus_handle.clone())
-                                        .action("New Context", Box::new(NewFile))
+                                        .action("New Context", Box::new(NewContext))
                                         .action("History", Box::new(DeployHistory))
                                         .action("Prompt Library", Box::new(DeployPromptLibrary))
                                         .action("Configure", Box::new(ShowConfiguration))
@@ -851,6 +855,18 @@ impl AssistantPanel {
         }
     }
 
+    pub fn create_new_context(
+        workspace: &mut Workspace,
+        _: &NewContext,
+        cx: &mut ViewContext<Workspace>,
+    ) {
+        if let Some(panel) = workspace.panel::<AssistantPanel>(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.new_context(cx);
+            });
+        }
+    }
+
     fn new_context(&mut self, cx: &mut ViewContext<Self>) -> Option<View<ContextEditor>> {
         if self.project.read(cx).is_via_collab() {
             let task = self
@@ -911,6 +927,15 @@ impl AssistantPanel {
             });
 
             self.show_context(editor.clone(), cx);
+            let workspace = self.workspace.clone();
+            cx.spawn(move |_, mut cx| async move {
+                workspace
+                    .update(&mut cx, |workspace, cx| {
+                        workspace.focus_panel::<AssistantPanel>(cx);
+                    })
+                    .ok();
+            })
+            .detach();
             Some(editor)
         }
     }
@@ -1192,7 +1217,7 @@ impl Render for AssistantPanel {
         v_flex()
             .key_context("AssistantPanel")
             .size_full()
-            .on_action(cx.listener(|this, _: &workspace::NewFile, cx| {
+            .on_action(cx.listener(|this, _: &NewContext, cx| {
                 this.new_context(cx);
             }))
             .on_action(
@@ -1392,6 +1417,7 @@ pub struct ContextEditor {
     remote_id: Option<workspace::ViewId>,
     pending_slash_command_creases: HashMap<Range<language::Anchor>, CreaseId>,
     pending_slash_command_blocks: HashMap<Range<language::Anchor>, CustomBlockId>,
+    pending_tool_use_creases: HashMap<Range<language::Anchor>, CreaseId>,
     _subscriptions: Vec<Subscription>,
     workflow_steps: HashMap<Range<language::Anchor>, WorkflowStepViewState>,
     active_workflow_step: Option<ActiveWorkflowStep>,
@@ -1456,6 +1482,7 @@ impl ContextEditor {
             project,
             pending_slash_command_creases: HashMap::default(),
             pending_slash_command_blocks: HashMap::default(),
+            pending_tool_use_creases: HashMap::default(),
             _subscriptions,
             workflow_steps: HashMap::default(),
             active_workflow_step: None,
@@ -1831,6 +1858,72 @@ impl ContextEditor {
                             cx,
                         );
                     }
+
+                    let new_tool_uses = self
+                        .context
+                        .read(cx)
+                        .pending_tool_uses()
+                        .into_iter()
+                        .filter(|tool_use| {
+                            !self
+                                .pending_tool_use_creases
+                                .contains_key(&tool_use.source_range)
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>();
+
+                    let buffer = editor.buffer().read(cx).snapshot(cx);
+                    let (excerpt_id, _buffer_id, _) = buffer.as_singleton().unwrap();
+                    let excerpt_id = *excerpt_id;
+
+                    let mut buffer_rows_to_fold = BTreeSet::new();
+
+                    let creases = new_tool_uses
+                        .iter()
+                        .map(|tool_use| {
+                            let placeholder = FoldPlaceholder {
+                                render: render_fold_icon_button(
+                                    cx.view().downgrade(),
+                                    IconName::PocketKnife,
+                                    tool_use.name.clone().into(),
+                                ),
+                                constrain_width: false,
+                                merge_adjacent: false,
+                            };
+                            let render_trailer =
+                                move |_row, _unfold, _cx: &mut WindowContext| Empty.into_any();
+
+                            let start = buffer
+                                .anchor_in_excerpt(excerpt_id, tool_use.source_range.start)
+                                .unwrap();
+                            let end = buffer
+                                .anchor_in_excerpt(excerpt_id, tool_use.source_range.end)
+                                .unwrap();
+
+                            let buffer_row = MultiBufferRow(start.to_point(&buffer).row);
+                            buffer_rows_to_fold.insert(buffer_row);
+
+                            Crease::new(
+                                start..end,
+                                placeholder,
+                                fold_toggle("tool-use"),
+                                render_trailer,
+                            )
+                        })
+                        .collect::<Vec<_>>();
+
+                    let crease_ids = editor.insert_creases(creases, cx);
+
+                    for buffer_row in buffer_rows_to_fold.into_iter().rev() {
+                        editor.fold_at(&FoldAt { buffer_row }, cx);
+                    }
+
+                    self.pending_tool_use_creases.extend(
+                        new_tool_uses
+                            .iter()
+                            .map(|tool_use| tool_use.source_range.clone())
+                            .zip(crease_ids),
+                    );
                 });
             }
             ContextEvent::WorkflowStepsUpdated { removed, updated } => {
@@ -1996,6 +2089,27 @@ impl ContextEditor {
                             self.workspace.clone(),
                             cx,
                         );
+                    }
+                }
+            }
+            ContextEvent::UsePendingTools => {
+                let pending_tool_uses = self
+                    .context
+                    .read(cx)
+                    .pending_tool_uses()
+                    .into_iter()
+                    .filter(|tool_use| tool_use.status.is_idle())
+                    .cloned()
+                    .collect::<Vec<_>>();
+
+                for tool_use in pending_tool_uses {
+                    let tool_registry = ToolRegistry::global(cx);
+                    if let Some(tool) = tool_registry.tool(&tool_use.name) {
+                        let task = tool.run(tool_use.input, self.workspace.clone(), cx);
+
+                        self.context.update(cx, |context, cx| {
+                            context.insert_tool_output(tool_use.id.clone(), task, cx);
+                        });
                     }
                 }
             }
@@ -4841,7 +4955,10 @@ fn make_lsp_adapter_delegate(
             .worktrees(cx)
             .next()
             .ok_or_else(|| anyhow!("no worktrees when constructing ProjectLspAdapterDelegate"))?;
-        Ok(ProjectLspAdapterDelegate::new(project, &worktree, cx) as Arc<dyn LspAdapterDelegate>)
+        project.lsp_store().update(cx, |lsp_store, cx| {
+            Ok(ProjectLspAdapterDelegate::new(lsp_store, &worktree, cx)
+                as Arc<dyn LspAdapterDelegate>)
+        })
     })
 }
 

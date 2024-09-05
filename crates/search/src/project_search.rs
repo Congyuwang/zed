@@ -114,7 +114,11 @@ pub fn init(cx: &mut AppContext) {
     .detach();
 }
 
-struct ProjectSearch {
+fn is_contains_uppercase(str: &str) -> bool {
+    str.chars().any(|c| c.is_uppercase())
+}
+
+pub struct ProjectSearch {
     project: Model<Project>,
     excerpts: Model<MultiBuffer>,
     pending_search: Option<Task<Option<()>>>,
@@ -154,7 +158,7 @@ pub struct ProjectSearchView {
 }
 
 #[derive(Debug, Clone)]
-struct ProjectSearchSettings {
+pub struct ProjectSearchSettings {
     search_options: SearchOptions,
     filters_enabled: bool,
 }
@@ -165,7 +169,7 @@ pub struct ProjectSearchBar {
 }
 
 impl ProjectSearch {
-    fn new(project: Model<Project>, cx: &mut ModelContext<Self>) -> Self {
+    pub fn new(project: Model<Project>, cx: &mut ModelContext<Self>) -> Self {
         let replica_id = project.read(cx).replica_id();
         let capability = project.read(cx).capability();
 
@@ -612,7 +616,7 @@ impl ProjectSearchView {
         });
     }
 
-    fn new(
+    pub fn new(
         workspace: WeakView<Workspace>,
         model: Model<ProjectSearch>,
         cx: &mut ViewContext<Self>,
@@ -651,7 +655,22 @@ impl ProjectSearchView {
         });
         // Subscribe to query_editor in order to reraise editor events for workspace item activation purposes
         subscriptions.push(
-            cx.subscribe(&query_editor, |_, _, event: &EditorEvent, cx| {
+            cx.subscribe(&query_editor, |this, _, event: &EditorEvent, cx| {
+                match event {
+                    EditorEvent::Edited { .. } => {
+                        if EditorSettings::get_global(cx).use_smartcase_search {
+                            let query = this.search_query_text(cx);
+                            if !query.is_empty() {
+                                if this.search_options.contains(SearchOptions::CASE_SENSITIVE)
+                                    != is_contains_uppercase(&query)
+                                {
+                                    this.toggle_search_option(SearchOptions::CASE_SENSITIVE, cx);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
                 cx.emit(ViewEvent::EditorEvent(event.clone()))
             }),
         );
@@ -763,9 +782,9 @@ impl ProjectSearchView {
         });
     }
 
-    // Re-activate the most recently activated search in this pane or the most recent if it has been closed.
-    // If no search exists in the workspace, create a new one.
-    fn deploy_search(
+    /// Re-activate the most recently activated search in this pane or the most recent if it has been closed.
+    /// If no search exists in the workspace, create a new one.
+    pub fn deploy_search(
         workspace: &mut Workspace,
         action: &workspace::DeploySearch,
         cx: &mut ViewContext<Workspace>,
@@ -1055,6 +1074,15 @@ impl ProjectSearchView {
     fn set_query(&mut self, query: &str, cx: &mut ViewContext<Self>) {
         self.query_editor
             .update(cx, |query_editor, cx| query_editor.set_text(query, cx));
+        if EditorSettings::get_global(cx).use_smartcase_search {
+            if !query.is_empty() {
+                if self.search_options.contains(SearchOptions::CASE_SENSITIVE)
+                    != is_contains_uppercase(query)
+                {
+                    self.toggle_search_option(SearchOptions::CASE_SENSITIVE, cx)
+                }
+            }
+        }
     }
 
     fn focus_results_editor(&mut self, cx: &mut ViewContext<Self>) {
@@ -1178,6 +1206,11 @@ impl ProjectSearchView {
             cx.stop_propagation();
             return self.focus_results_editor(cx);
         }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn results_editor(&self) -> &View<Editor> {
+        &self.results_editor
     }
 }
 
@@ -1823,15 +1856,31 @@ fn register_workspace_action_for_present_search<A: Action>(
     });
 }
 
+#[cfg(any(test, feature = "test-support"))]
+pub fn perform_project_search(
+    search_view: &View<ProjectSearchView>,
+    text: impl Into<std::sync::Arc<str>>,
+    cx: &mut gpui::VisualTestContext,
+) {
+    search_view.update(cx, |search_view, cx| {
+        search_view
+            .query_editor
+            .update(cx, |query_editor, cx| query_editor.set_text(text, cx));
+        search_view.search(cx);
+    });
+    cx.run_until_parked();
+}
+
 #[cfg(test)]
 pub mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use editor::{display_map::DisplayRow, DisplayPoint};
     use gpui::{Action, TestAppContext, WindowHandle};
     use project::FakeFs;
     use serde_json::json;
     use settings::SettingsStore;
-    use std::sync::Arc;
     use workspace::DeploySearch;
 
     #[gpui::test]
