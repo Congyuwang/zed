@@ -212,7 +212,7 @@ impl LanguageModelRequestMessage {
         self.content.is_empty()
             || self
                 .content
-                .get(0)
+                .first()
                 .map(|content| match content {
                     MessageContent::Text(text) => text.trim().is_empty(),
                     MessageContent::ToolResult(tool_result) => {
@@ -399,7 +399,7 @@ impl LanguageModelRequest {
             tool_choice: None,
             metadata: None,
             stop_sequences: Vec::new(),
-            temperature: None,
+            temperature: Some(self.temperature),
             top_k: None,
             top_p: None,
         }
