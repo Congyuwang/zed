@@ -54,7 +54,7 @@ use language_model::{
 use language_model::{LanguageModelImage, LanguageModelToolUse};
 use multi_buffer::MultiBufferRow;
 use picker::{Picker, PickerDelegate};
-use project::lsp_store::ProjectLspAdapterDelegate;
+use project::lsp_store::LocalLspAdapterDelegate;
 use project::{Project, Worktree};
 use search::{buffer_search::DivRegistrar, BufferSearchBar};
 use serde::{Deserialize, Serialize};
@@ -1906,7 +1906,22 @@ impl ContextEditor {
         cx: &mut ViewContext<Self>,
     ) {
         if let Some(command) = SlashCommandRegistry::global(cx).command(name) {
-            let output = command.run(arguments, workspace, self.lsp_adapter_delegate.clone(), cx);
+            let context = self.context.read(cx);
+            let sections = context
+                .slash_command_output_sections()
+                .into_iter()
+                .filter(|section| section.is_valid(context.buffer().read(cx)))
+                .cloned()
+                .collect::<Vec<_>>();
+            let snapshot = context.buffer().read(cx).snapshot();
+            let output = command.run(
+                arguments,
+                &sections,
+                snapshot,
+                workspace,
+                self.lsp_adapter_delegate.clone(),
+                cx,
+            );
             self.context.update(cx, |context, cx| {
                 context.insert_command_output(
                     command_range,
@@ -3267,7 +3282,7 @@ impl ContextEditor {
 
                     let fence = codeblock_fence_for_path(
                         filename.as_deref(),
-                        Some(selection.start.row..selection.end.row),
+                        Some(selection.start.row..=selection.end.row),
                     );
 
                     if let Some((line_comment_prefix, outline_text)) =
@@ -4110,16 +4125,18 @@ impl ContextEditor {
                         h_flex()
                             .gap_3()
                             .child(
-                                Icon::new(IconName::ExclamationTriangle)
+                                Icon::new(IconName::Warning)
                                     .size(IconSize::Small)
                                     .color(Color::Warning),
                             )
                             .child(Label::new(label)),
                     )
                     .child(
-                        Button::new("open-configuration", "Open configuration")
+                        Button::new("open-configuration", "Configure Providers")
                             .size(ButtonSize::Compact)
+                            .icon(Some(IconName::SlidersVertical))
                             .icon_size(IconSize::Small)
+                            .icon_position(IconPosition::Start)
                             .style(ButtonStyle::Filled)
                             .on_click({
                                 let focus_handle = self.focus_handle(cx).clone();
@@ -4723,6 +4740,20 @@ impl Render for ContextEditorToolbarItem {
         let weak_self = cx.view().downgrade();
         let right_side = h_flex()
             .gap_2()
+            // TODO display this in a nicer way, once we have a design for it.
+            // .children({
+            //     let project = self
+            //         .workspace
+            //         .upgrade()
+            //         .map(|workspace| workspace.read(cx).project().downgrade());
+            //
+            //     let scan_items_remaining = cx.update_global(|db: &mut SemanticDb, cx| {
+            //         project.and_then(|project| db.remaining_summaries(&project, cx))
+            //     });
+
+            //     scan_items_remaining
+            //         .map(|remaining_items| format!("Files to scan: {}", remaining_items))
+            // })
             .child(
                 ModelSelector::new(
                     self.fs.clone(),
@@ -5221,7 +5252,7 @@ fn quote_selection_fold_placeholder(title: String, editor: WeakView<Editor>) -> 
                 ButtonLike::new(fold_id)
                     .style(ButtonStyle::Filled)
                     .layer(ElevationIndex::ElevatedSurface)
-                    .child(Icon::new(IconName::TextSelect))
+                    .child(Icon::new(IconName::TextSnippet))
                     .child(Label::new(title.clone()).single_line())
                     .on_click(move |_, cx| {
                         editor
@@ -5325,7 +5356,7 @@ fn render_docs_slash_command_trailer(
             div()
                 .id(("latest-error", row.0))
                 .child(
-                    Icon::new(IconName::ExclamationTriangle)
+                    Icon::new(IconName::Warning)
                         .size(IconSize::Small)
                         .color(Color::Warning),
                 )
@@ -5353,18 +5384,16 @@ fn make_lsp_adapter_delegate(
         let worktree = project
             .worktrees(cx)
             .next()
-            .ok_or_else(|| anyhow!("no worktrees when constructing ProjectLspAdapterDelegate"))?;
-        let fs = if project.is_local() {
-            Some(project.fs().clone())
-        } else {
-            None
-        };
+            .ok_or_else(|| anyhow!("no worktrees when constructing LocalLspAdapterDelegate"))?;
         let http_client = project.client().http_client().clone();
         project.lsp_store().update(cx, |lsp_store, cx| {
-            Ok(
-                ProjectLspAdapterDelegate::new(lsp_store, &worktree, http_client, fs, None, cx)
-                    as Arc<dyn LspAdapterDelegate>,
-            )
+            Ok(LocalLspAdapterDelegate::new(
+                lsp_store,
+                &worktree,
+                http_client,
+                project.fs().clone(),
+                cx,
+            ) as Arc<dyn LspAdapterDelegate>)
         })
     })
 }

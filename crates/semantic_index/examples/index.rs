@@ -4,7 +4,7 @@ use gpui::App;
 use http_client::{proxy::Proxy, HttpClientWithUrl};
 use language::language_settings::AllLanguageSettings;
 use project::Project;
-use semantic_index::{OpenAiEmbeddingModel, OpenAiEmbeddingProvider, SemanticIndex};
+use semantic_index::{OpenAiEmbeddingModel, OpenAiEmbeddingProvider, SemanticDb};
 use settings::SettingsStore;
 use std::{
     path::{Path, PathBuf},
@@ -54,7 +54,7 @@ fn main() {
         ));
 
         cx.spawn(|mut cx| async move {
-            let semantic_index = SemanticIndex::new(
+            let semantic_index = SemanticDb::new(
                 PathBuf::from("/tmp/semantic-index-db.mdb"),
                 embedding_provider,
                 &mut cx,
@@ -75,6 +75,7 @@ fn main() {
 
             let project_index = cx
                 .update(|cx| semantic_index.project_index(project.clone(), cx))
+                .unwrap()
                 .unwrap();
 
             let (tx, rx) = oneshot::channel();

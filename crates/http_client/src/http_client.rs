@@ -9,7 +9,7 @@ use isahc::{
     RequestExt,
 };
 pub use isahc::{
-    http::{Method, StatusCode, Uri},
+    http::{self, Method, StatusCode, Uri},
     AsyncBody, Error, HttpClient as IsahcHttpClient, Request, Response,
 };
 use parking_lot::Mutex;
