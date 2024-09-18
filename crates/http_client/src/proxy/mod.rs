@@ -113,7 +113,6 @@ impl SysProxiesSettings {
     /// Choose one available proxy if any.
     /// Prioritize socks > https > http.
     pub fn choose_one(&self) -> Option<String> {
-        //
         if let Some(socks) = &self.socks {
             Some(socks.as_str())
         } else if let Some(https) = &self.https {
@@ -157,7 +156,7 @@ fn get_current_proxy(
                 })
             }
         })
-        .or_else(|| read_proxy_from_env())
+        .or_else(read_proxy_from_env)
 }
 
 pub fn read_proxy_from_env() -> Option<Uri> {

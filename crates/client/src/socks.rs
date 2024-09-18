@@ -35,12 +35,8 @@ pub(crate) async fn connect_socks_proxy_stream(
 }
 
 fn parse_socks_proxy(proxy: Proxy) -> Option<((String, u16), SocksVersion)> {
-    let Some(proxy_uri) = proxy.to_uri() else {
-        return None;
-    };
-    let Some(scheme) = proxy_uri.scheme_str() else {
-        return None;
-    };
+    let proxy_uri = proxy.to_uri()?;
+    let scheme = proxy_uri.scheme_str()?;
     let socks_version = if scheme.starts_with("socks4") {
         // socks4
         SocksVersion::V4
